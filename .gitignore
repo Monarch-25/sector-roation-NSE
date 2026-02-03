@@ -1,5 +1,5 @@
 # CSV files
-*.csv
+# *.csv
 
 # Python cache files
 __pycache__/
