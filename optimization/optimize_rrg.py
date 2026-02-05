@@ -4,21 +4,30 @@ Hyperparameter Optimization for RRG Strategy
 Uses Optuna (Bayesian optimization) to find optimal parameters
 based on walk-forward validation performance.
 
+IMPORTANT: Uses a holdout period to prevent data leakage.
+- Optimization runs on data BEFORE the holdout cutoff
+- Final evaluation runs on the holdout period (true OOS)
+
 Usage:
-    python optimize_hyperparams.py --n-trials 100
-    python optimize_hyperparams.py --n-trials 50 --objective sharpe
+    python optimization/optimize_rrg.py --n-trials 100
+    python optimization/optimize_rrg.py --n-trials 50 --holdout-years 2
 """
 import argparse
+import sys
 import warnings
 from datetime import datetime
+from pathlib import Path
 
 import optuna
 from optuna.samplers import TPESampler
 import pandas as pd
 import numpy as np
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from strategies import RRGStrategy, RRGConfig
-from backtesting import WalkForwardValidator, WalkForwardConfig
+from backtesting import Backtester, WalkForwardValidator, WalkForwardConfig
 
 warnings.filterwarnings('ignore')
 
@@ -104,24 +113,44 @@ def run_optimization(
     n_trials: int = 100,
     objective_metric: str = "sharpe_ratio",
     train_window: int = 504,
-    test_window: int = 63
+    test_window: int = 63,
+    holdout_years: float = 2.0,
+    output_dir: str = "."
 ):
-    """Run hyperparameter optimization."""
+    """Run hyperparameter optimization with holdout period."""
     
-    print("=" * 60)
+    print("=" * 70)
     print("RRG STRATEGY HYPERPARAMETER OPTIMIZATION")
-    print("=" * 60)
+    print("=" * 70)
+    
+    # Load full data
+    print("\nLoading data...")
+    prices_full, benchmark_full = load_data(csv_path)
+    print(f"Full data: {prices_full.index[0].date()} to {prices_full.index[-1].date()}")
+    print(f"Total: {len(prices_full)} days, {len(prices_full.columns)} sectors")
+    
+    # Split into optimization and holdout periods
+    holdout_days = int(holdout_years * 252)  # Trading days per year
+    cutoff_idx = len(prices_full) - holdout_days
+    cutoff_date = prices_full.index[cutoff_idx]
+    
+    prices_opt = prices_full.iloc[:cutoff_idx]
+    benchmark_opt = benchmark_full.iloc[:cutoff_idx]
+    
+    prices_holdout = prices_full.iloc[cutoff_idx:]
+    benchmark_holdout = benchmark_full.iloc[cutoff_idx:]
+    
+    print(f"\n--- Data Split ---")
+    print(f"Optimization period: {prices_opt.index[0].date()} to {prices_opt.index[-1].date()} ({len(prices_opt)} days)")
+    print(f"Holdout period:      {prices_holdout.index[0].date()} to {prices_holdout.index[-1].date()} ({len(prices_holdout)} days)")
+    print(f"Holdout years:       {holdout_years}")
+    
+    print(f"\n--- Optimization Settings ---")
     print(f"Objective: Maximize {objective_metric}")
     print(f"Trials: {n_trials}")
     print(f"Walk-Forward: train={train_window} days, test={test_window} days")
-    print()
     
-    # Load data
-    print("Loading data...")
-    prices, benchmark = load_data(csv_path)
-    print(f"Data: {len(prices)} days, {len(prices.columns)} sectors")
-    
-    # Walk-forward config
+    # Walk-forward config (runs on optimization period only)
     wf_config = WalkForwardConfig(
         train_window=train_window,
         test_window=test_window,
@@ -136,24 +165,24 @@ def run_optimization(
         study_name="rrg_optimization"
     )
     
-    # Create objective
-    objective = create_objective(prices, benchmark, wf_config, objective_metric)
+    # Create objective using ONLY optimization period data
+    objective = create_objective(prices_opt, benchmark_opt, wf_config, objective_metric)
     
     # Run optimization
     print(f"\nStarting optimization with {n_trials} trials...")
-    print("-" * 60)
+    print("-" * 70)
     
     study.optimize(
         objective,
         n_trials=n_trials,
         show_progress_bar=True,
-        n_jobs=1  # Sequential for stability
+        n_jobs=1
     )
     
     # Results
-    print("\n" + "=" * 60)
-    print("OPTIMIZATION RESULTS")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("OPTIMIZATION RESULTS (on optimization period)")
+    print("=" * 70)
     
     print(f"\nBest {objective_metric}: {study.best_value:.4f}")
     print("\nBest Parameters:")
@@ -175,27 +204,46 @@ def run_optimization(
         rebalance_frequency="W-FRI"
     )
     
-    # Run final walk-forward with best params
-    print("\n" + "-" * 60)
-    print("Running final walk-forward with best parameters...")
+    # =========================================================================
+    # TRUE OUT-OF-SAMPLE EVALUATION ON HOLDOUT PERIOD
+    # =========================================================================
+    print("\n" + "=" * 70)
+    print("TRUE OUT-OF-SAMPLE EVALUATION (Holdout Period)")
+    print("=" * 70)
+    print(f"Period: {prices_holdout.index[0].date()} to {prices_holdout.index[-1].date()}")
+    print("Note: These params were NEVER optimized on this data!\n")
     
+    # Fit on optimization period, test on holdout
     strategy = RRGStrategy(best_config)
-    validator = WalkForwardValidator(strategy, config=wf_config)
-    result = validator.validate(prices, benchmark)
+    strategy.fit(prices_opt, benchmark_opt)
     
-    validator.print_report(result)
+    # Run backtest on holdout period
+    backtester = Backtester(strategy, risk_free_rate=0.05)
+    holdout_result = backtester.run(prices_holdout, benchmark_holdout)
+    
+    print("--- Holdout Period Performance ---")
+    backtester.print_report(holdout_result)
+    
+    # Also run walk-forward on full data for comparison
+    print("\n" + "-" * 70)
+    print("Walk-Forward on FULL data (for reference, includes optimization period)")
+    
+    strategy_full = RRGStrategy(best_config)
+    validator_full = WalkForwardValidator(strategy_full, config=wf_config, risk_free_rate=0.05)
+    wf_result_full = validator_full.validate(prices_full, benchmark_full)
+    validator_full.print_report(wf_result_full)
     
     # Save results
     results_df = study.trials_dataframe()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = f"optimization_results_{timestamp}.csv"
+    results_file = Path(output_dir) / f"rrg_optimization_{timestamp}.csv"
     results_df.to_csv(results_file, index=False)
     print(f"\nSaved trial results to {results_file}")
     
     # Print config for copy-paste
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("COPY-PASTE CONFIG:")
-    print("=" * 60)
+    print("=" * 70)
     print(f"""
 config = RRGConfig(
     top_n_sectors={study.best_params["top_n_sectors"]},
@@ -212,7 +260,7 @@ config = RRGConfig(
 )
 """)
     
-    return study, best_config
+    return study, best_config, holdout_result
 
 
 def main():
@@ -225,6 +273,9 @@ def main():
                         help="Optimization objective")
     parser.add_argument("--train-window", type=int, default=504, help="Training window (days)")
     parser.add_argument("--test-window", type=int, default=63, help="Test window (days)")
+    parser.add_argument("--holdout-years", type=float, default=2.0, 
+                        help="Years to hold out for true OOS testing (default: 2)")
+    parser.add_argument("--output-dir", default="optimization", help="Output directory for results")
     
     args = parser.parse_args()
     
@@ -233,7 +284,9 @@ def main():
         n_trials=args.n_trials,
         objective_metric=args.objective,
         train_window=args.train_window,
-        test_window=args.test_window
+        test_window=args.test_window,
+        holdout_years=args.holdout_years,
+        output_dir=args.output_dir
     )
 
 
