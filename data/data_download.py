@@ -21,7 +21,7 @@ tickers = {
 }
 
 # 2. Define Timeframe
-start_date = '2013-01-01'
+start_date = '2017-01-01'
 end_date = datetime.today().strftime('%Y-%m-%d')
 
 print(f"Downloading data for {len(tickers)} indices from {start_date} to {end_date}...")

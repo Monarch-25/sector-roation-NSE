@@ -239,8 +239,8 @@ python run_strategy.py --mode backtest --top-n 3 --max-weight 0.4 --trend-filter
 
 | Date | Auto | Finance | IT | ... | Benchmark |
 |------|------|---------|----|----|-----------|
-| 2013-01-01 | 4869.5 | NaN | NaN | ... | 1.0 |
-| 2013-01-02 | 4911.3 | 12786.7 | 6031.0 | ... | 1.006 |
+| 2017-01-02 | 5765.3 | 3142.5 | 9312.8 | ... | 1.0 |
+| 2017-01-03 | 5802.1 | 3155.2 | 9285.4 | ... | 1.008 |
 
 - **Index**: Date (datetime)
 - **Columns**: Sector price indices + Benchmark
