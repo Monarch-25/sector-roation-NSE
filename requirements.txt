@@ -25,3 +25,11 @@ yfinance>=0.2
 # Notebook
 jupyter>=1.0
 ipykernel>=6.0
+
+# Dynamic Workflow Compiler (DWC)
+pydantic>=2.6
+fastapi>=0.110
+uvicorn>=0.29
+langgraph>=0.2
+langchain-aws>=0.2
+boto3>=1.34
